@@ -88,6 +88,7 @@ impl Extension {
 pub struct ExtensionManager {
     extensions: Mutex<HashMap<String, Extension>>,
     provider: Arc<Mutex<Option<Arc<dyn Provider>>>>,
+    agent: Arc<Mutex<Option<Arc<crate::agents::Agent>>>>,
 }
 
 /// A flattened representation of a resource used by the agent to prepare inference
@@ -248,12 +249,18 @@ impl ExtensionManager {
         Self {
             extensions: Mutex::new(HashMap::new()),
             provider: Arc::new(Mutex::new(None)),
+            agent: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Set the provider for handling sampling requests
     pub async fn set_provider(&self, provider: Arc<dyn Provider>) {
         *self.provider.lock().await = Some(provider);
+    }
+
+    /// Set the agent reference for handling sampling requests
+    pub async fn set_agent(&self, agent: Arc<crate::agents::Agent>) {
+        *self.agent.lock().await = Some(agent);
     }
 
     /// Get the provider for handling sampling requests
@@ -332,10 +339,17 @@ impl ExtensionManager {
         }
 
         // Create sampling handler for this extension
-        let sampling_handler = Box::new(ExtensionSamplingHandler::new(
+        let mut sampling_handler = ExtensionSamplingHandler::new(
             self.provider.clone(),
             sanitized_name.clone(),
-        ));
+        );
+        
+        // Set the agent reference if available
+        if let Some(agent) = self.agent.lock().await.as_ref() {
+            sampling_handler = sampling_handler.with_agent(agent.clone());
+        }
+        
+        let sampling_handler = Box::new(sampling_handler);
 
         let client: Box<dyn McpClientTrait> = match &config {
             ExtensionConfig::Sse { uri, timeout, .. } => {
@@ -1116,15 +1130,22 @@ impl ExtensionManager {
 #[derive(Clone)]
 pub struct ExtensionSamplingHandler {
     provider: Arc<Mutex<Option<Arc<dyn Provider>>>>,
-    _extension_name: String,
+    extension_name: String,
+    agent: Option<Arc<crate::agents::Agent>>,
 }
 
 impl ExtensionSamplingHandler {
     pub fn new(provider: Arc<Mutex<Option<Arc<dyn Provider>>>>, extension_name: String) -> Self {
         Self {
             provider,
-            _extension_name: extension_name,
+            extension_name,
+            agent: None,
         }
+    }
+
+    pub fn with_agent(mut self, agent: Arc<crate::agents::Agent>) -> Self {
+        self.agent = Some(agent);
+        self
     }
 }
 
@@ -1133,7 +1154,80 @@ impl SamplingHandler for ExtensionSamplingHandler {
     async fn handle_create_message(
         &self,
         params: CreateMessageRequestParam,
-        _extension_name: String,
+        extension_name: String,
+    ) -> Result<CreateMessageResult, ServiceError> {
+        use crate::agents::agent::SamplingApprovalAction;
+        
+        // If we have an agent, use it to request approval
+        if let Some(agent) = &self.agent {
+            // Generate a unique request ID for this sampling request
+            let request_id = uuid::Uuid::new_v4().to_string();
+            
+            // Get the sampling confirmation receiver
+            let receiver = agent.get_sampling_confirmation_receiver();
+            let mut receiver_guard = receiver.lock().await;
+            
+            // TODO: Send the sampling request to the UI via an event/notification
+            // The UI needs to be notified that there's a sampling request pending
+            // This would typically be done through a WebSocket or SSE connection
+            // For now, we log it and wait for a response
+            
+            tracing::info!(
+                "Sampling request from extension '{}' with request_id: {} - waiting for UI approval",
+                extension_name,
+                request_id
+            );
+            
+            // Set a timeout for waiting for approval (30 seconds)
+            let timeout_duration = tokio::time::Duration::from_secs(30);
+            
+            // Wait for a response with the matching request_id
+            match tokio::time::timeout(timeout_duration, async {
+                while let Some((id, action)) = receiver_guard.recv().await {
+                    if id == request_id {
+                        return Some(action);
+                    }
+                    // If it's not our request, we should probably put it back somehow
+                    // or have a better mechanism for routing responses
+                }
+                None
+            }).await {
+                Ok(Some(action)) => {
+                    match action {
+                        SamplingApprovalAction::Approve => {
+                            tracing::debug!("Sampling request {} approved", request_id);
+                            self.execute_sampling(params).await
+                        }
+                        SamplingApprovalAction::Deny => {
+                            tracing::debug!("Sampling request {} denied", request_id);
+                            Err(ServiceError::UnexpectedResponse)
+                        }
+                        SamplingApprovalAction::Edit { edited_messages } => {
+                            tracing::debug!("Sampling request {} edited", request_id);
+                            // Create a new params with the edited messages
+                            let mut edited_params = params;
+                            edited_params.messages = edited_messages;
+                            self.execute_sampling(edited_params).await
+                        }
+                    }
+                }
+                Ok(None) | Err(_) => {
+                    tracing::warn!("Sampling request {} timed out or no response received, executing directly", request_id);
+                    // Timeout or no response - fallback to direct execution
+                    self.execute_sampling(params).await
+                }
+            }
+        } else {
+            // No agent available, execute directly
+            self.execute_sampling(params).await
+        }
+    }
+}
+
+impl ExtensionSamplingHandler {
+    async fn execute_sampling(
+        &self,
+        params: CreateMessageRequestParam,
     ) -> Result<CreateMessageResult, ServiceError> {
         // Get the provider from the shared reference
         let provider_lock = self.provider.lock().await;

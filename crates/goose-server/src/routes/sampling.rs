@@ -102,40 +102,51 @@ pub async fn handle_sampling_approval(
     State(state): State<Arc<AppState>>,
     Json(request): Json<SamplingApprovalRequest>,
 ) -> Result<Json<SamplingResponse>, StatusCode> {
+    use goose::agents::SamplingApprovalAction;
+    
     // Get the agent for this session
-    let _agent = state.get_agent_for_route(request.session_id.clone()).await?;
+    let agent = state.get_agent_for_route(request.session_id.clone()).await?;
     
     // Handle the sampling confirmation based on the action
-    match request.action.as_str() {
+    let action = match request.action.as_str() {
         "approve" => {
-            // TODO: Send approval to the agent's sampling handler
-            // For now, we'll just acknowledge the request
-            Ok(Json(SamplingResponse {
-                status: "approved".to_string(),
-                message: Some("Sampling request approved".to_string()),
-            }))
+            SamplingApprovalAction::Approve
         }
         "deny" => {
-            // TODO: Send denial to the agent's sampling handler
-            Ok(Json(SamplingResponse {
-                status: "denied".to_string(),
-                message: Some("Sampling request denied".to_string()),
-            }))
+            SamplingApprovalAction::Deny
         }
         "edit" => {
-            // TODO: Handle edited messages
-            Ok(Json(SamplingResponse {
-                status: "edited".to_string(),
-                message: Some("Sampling request edited and approved".to_string()),
-            }))
+            if let Some(edited_messages) = request.edited_messages {
+                // Convert our local SamplingMessage back to rmcp::model::SamplingMessage
+                let converted_messages: Vec<rmcp::model::SamplingMessage> = edited_messages
+                    .into_iter()
+                    .map(|msg| msg.into())
+                    .collect();
+                SamplingApprovalAction::Edit {
+                    edited_messages: converted_messages,
+                }
+            } else {
+                return Ok(Json(SamplingResponse {
+                    status: "error".to_string(),
+                    message: Some("Edit action requires edited_messages".to_string()),
+                }));
+            }
         }
         _ => {
-            Ok(Json(SamplingResponse {
+            return Ok(Json(SamplingResponse {
                 status: "error".to_string(),
                 message: Some("Invalid action".to_string()),
-            }))
+            }));
         }
-    }
+    };
+    
+    // Send the approval action to the agent
+    agent.handle_sampling_confirmation(request.id.clone(), action).await;
+    
+    Ok(Json(SamplingResponse {
+        status: "success".to_string(),
+        message: Some(format!("Sampling request {}", request.action)),
+    }))
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {

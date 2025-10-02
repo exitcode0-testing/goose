@@ -118,6 +118,10 @@ impl AgentManager {
         }
 
         let agent = Arc::new(Agent::new());
+        
+        // Set the agent reference in the extension manager
+        agent.extension_manager.set_agent(agent.clone()).await;
+        
         agent.set_scheduler(Arc::clone(&self.scheduler)).await;
         if let Some(provider) = &*self.default_provider.read().await {
             agent.update_provider(Arc::clone(provider)).await?;

@@ -17,8 +17,8 @@ use utoipa::{OpenApi, ToSchema};
 
 use goose::conversation::message::{
     ContextLengthExceeded, FrontendToolRequest, Message, MessageContent, MessageMetadata,
-    RedactedThinkingContent, SummarizationRequested, ThinkingContent, ToolConfirmationRequest,
-    ToolRequest, ToolResponse,
+    RedactedThinkingContent, SamplingConfirmationRequest, SummarizationRequested, ThinkingContent,
+    ToolConfirmationRequest, ToolRequest, ToolResponse,
 };
 use utoipa::openapi::schema::{
     AdditionalProperties, AnyOfBuilder, ArrayBuilder, ObjectBuilder, OneOfBuilder, Schema,
@@ -370,6 +370,7 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::recipe::delete_recipe,
         super::routes::setup::start_openrouter_setup,
         super::routes::setup::start_tetrate_setup,
+        super::routes::sampling::handle_sampling_approval,
     ),
     components(schemas(
         super::routes::config_management::UpsertConfigQuery,
@@ -403,6 +404,7 @@ derive_utoipa!(Icon as IconSchema);
         ToolResponse,
         ToolRequest,
         ToolConfirmationRequest,
+        SamplingConfirmationRequest,
         ThinkingContent,
         RedactedThinkingContent,
         FrontendToolRequest,
@@ -470,6 +472,10 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::agent::ResumeAgentRequest,
         super::routes::agent::ErrorResponse,
         super::routes::setup::SetupResponse,
+        super::routes::sampling::SamplingMessage,
+        super::routes::sampling::SamplingConfirmationRequest,
+        super::routes::sampling::SamplingApprovalRequest,
+        super::routes::sampling::SamplingResponse,
     ))
 )]
 pub struct ApiDoc;
